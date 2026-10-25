@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "WorkProof"
+description = "A revenue-risk audit workspace for small digital and marketing agencies. Compare contract scope, client communications, and work data to surface unbilled work, missing approvals, commitments, evidence, and recommended follow-up actions."
+version = "1.0.0"
+id = "artifacts/workproof"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 21589
+
+[services.development]
+run = "pnpm --filter @workspace/workproof run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/workproof", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/workproof/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21589"
+BASE_PATH = "/"

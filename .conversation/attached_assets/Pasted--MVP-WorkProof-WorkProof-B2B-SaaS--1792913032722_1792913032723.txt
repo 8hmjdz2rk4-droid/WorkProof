@@ -1,0 +1,514 @@
+Создай полноценный рабочий MVP веб-приложения WorkProof.
+
+КОНЦЕПЦИЯ
+
+WorkProof — B2B SaaS для небольших digital/marketing agencies.
+
+Главная задача продукта:
+
+находить потерянные обязательства, дополнительную работу и потенциально потерянную выручку между договором, перепиской и фактически выполненной работой.
+
+WorkProof должен отвечать на вопрос:
+
+«Что мы уже пообещали или сделали, за что можем не получить деньги или что можем забыть выполнить?»
+
+Не делай обычную CRM, project management system или chatbot.
+
+Главная сущность продукта:
+
+Promise → Work → Proof → Invoice → Money
+
+Если одна часть цепочки отсутствует или противоречит другой — система должна это обнаруживать.
+
+⸻
+
+MVP — НЕ УСЛОЖНЯЙ
+
+Не добавляй на этом этапе:
+
+* Slack API
+* WhatsApp API
+* Instagram API
+* Gmail OAuth
+* CRM integrations
+* payment processing
+* mobile app
+* сложную multi-agent architecture
+* enterprise SSO
+* billing system
+* автоматическую отправку сообщений
+
+MVP должен работать через загрузку файлов.
+
+⸻
+
+ОСНОВНОЙ USER FLOW
+
+После регистрации пользователь попадает на Dashboard.
+
+Главный CTA:
+
+New Revenue Audit
+
+Нажатие открывает новый аудит.
+
+Пользователь загружает:
+
+1. SOW / Contract
+    * PDF
+    * DOCX
+    * TXT
+2. Communication / Transcript
+    * TXT
+    * DOCX
+    * PDF
+    * CSV
+3. Work / Time Data
+    * CSV
+    * XLSX
+
+После загрузки:
+
+Analyze Project
+
+Покажи понятный loading state:
+
+Reading contract…
+
+Detecting commitments…
+
+Comparing communication with scope…
+
+Checking completed work…
+
+Calculating revenue risk…
+
+После анализа открыть Revenue Risk Report.
+
+⸻
+
+ГЛАВНЫЙ ЭКРАН
+
+В верхней части:
+
+REVENUE AT RISK
+
+Большое число.
+
+Например:
+
+$4,820
+
+Под ним:
+
+Estimated value of work that may be unbilled, unauthorized or at risk.
+
+Ниже четыре KPI:
+
+Commitments found
+7
+
+Scope deviations
+3
+
+Missing evidence
+2
+
+Potentially unbilled
+$1,240
+
+⸻
+
+PROBLEMS
+
+Создай список обнаруженных проблем.
+
+Каждая проблема должна иметь:
+
+* severity: Critical / High / Medium / Low
+* title
+* client
+* estimated value
+* explanation
+* source
+* recommended action
+* confidence
+
+Пример:
+
+🔴 HIGH
+
+Additional landing page work detected outside SOW
+
+Client:
+Acme Marketing
+
+Estimated value:
+$800
+
+Explanation:
+
+The SOW includes 3 landing pages. Communication indicates the client requested 2 additional landing pages. Work data shows both pages were completed.
+
+Source:
+
+Communication — Oct 18
+Work data — Landing Page #4, #5
+
+Status:
+
+No formal scope approval detected
+
+Recommended action:
+
+Create Change Order
+
+⸻
+
+ДЕТАЛЬНАЯ СТРАНИЦА ПРОБЛЕМЫ
+
+При нажатии на проблему открой подробную страницу.
+
+Покажи:
+
+WHAT HAPPENED
+
+Хронологию:
+
+Oct 18
+Client requested additional work.
+
+↓
+
+Oct 19
+Agency accepted request.
+
+↓
+
+Oct 21
+Work completed.
+
+↓
+
+Oct 25
+No formal approval detected.
+
+↓
+
+Oct 25
+No corresponding invoice detected.
+
+⸻
+
+EVIDENCE
+
+Покажи цитату/фрагмент из загруженного материала, на котором основано обнаружение.
+
+Очень важно:
+
+никогда не придумывай доказательства.
+
+Если конкретного доказательства нет, написать:
+
+Evidence not found.
+
+⸻
+
+MONEY
+
+Покажи:
+
+Original scope:
+$3,000
+
+Additional work:
+$800
+
+Potential revenue at risk:
+$800
+
+⸻
+
+RECOMMENDED ACTION
+
+Например:
+
+Create Change Order
+
+При нажатии открыть draft:
+
+⸻
+
+Subject:
+
+Additional landing pages — scope update
+
+Body:
+
+Короткое профессиональное письмо клиенту с описанием дополнительной работы и стоимости.
+
+Кнопки:
+
+Copy Draft
+
+Edit
+
+На MVP отправку email не делай.
+
+⸻
+
+SCOPE COMPARISON
+
+Создай страницу:
+
+CONTRACT VS ACTUAL WORK
+
+Таблица:
+
+Work	Contract	Actual	Difference	Status
+Landing pages	3	5	+2	🔴
+Blog posts	10	10	0	🟢
+Social creatives	20	27	+7	🔴
+
+Система должна выделять отклонения.
+
+⸻
+
+COMMITMENTS
+
+Отдельная страница:
+
+COMMITMENT REGISTER
+
+Каждая найденная договорённость:
+
+* Client
+* Commitment
+* Owner
+* Due date
+* Source
+* Status
+* Evidence
+* Estimated value
+
+Статусы:
+
+Open
+In progress
+Completed
+Overdue
+At risk
+Unverified
+
+⸻
+
+REVENUE LEAKS
+
+Отдельная страница:
+
+REVENUE LEAKS
+
+Категории:
+
+1. Unbilled work
+2. Scope creep
+3. Missing approval
+4. Missing evidence
+5. Over-delivery
+6. Missed commitment
+7. Billing mismatch
+
+Показывай общую сумму по каждой категории.
+
+⸻
+
+AI ANALYSIS
+
+Если в проекте есть AI API, используй его для анализа документов.
+
+Но архитектура должна быть сделана так, чтобы AI можно было заменить.
+
+AI должен извлекать структурированные данные:
+
+Contract
+
+* client
+* project
+* deliverables
+* quantities
+* prices
+* hours
+* deadlines
+* approval requirements
+
+Communication
+
+* requests
+* commitments
+* approvals
+* changes
+* deadlines
+* people
+* dates
+* quoted prices
+
+Work
+
+* task
+* employee
+* date
+* hours
+* status
+* client
+
+После extraction делай deterministic comparison.
+
+Не позволяй LLM самостоятельно придумывать сумму Revenue at Risk.
+
+Если данных недостаточно:
+
+Insufficient data
+
+а не выдуманное значение.
+
+Для каждой AI-generated finding сохраняй:
+
+* source
+* confidence
+* evidence
+
+⸻
+
+DEMO MODE
+
+Обязательно добавь кнопку:
+
+Try Demo
+
+Чтобы пользователь без загрузки файлов мог посмотреть готовый пример.
+
+Создай реалистичный demo project:
+
+Client:
+Northstar Media
+
+Contract:
+$8,000/month
+
+SOW:
+
+* 4 landing pages
+* 12 blog posts
+* 20 social creatives
+
+Communication содержит запрос клиента на дополнительные landing pages.
+
+Work data показывает 6 landing pages и 28 social creatives.
+
+Demo должен показать:
+
+Revenue at Risk
+
+$2,450
+
+И несколько реальных-looking findings.
+
+Важно:
+
+На demo-данных явно укажи:
+
+DEMO DATA
+
+⸻
+
+DESIGN
+
+Стиль:
+
+Premium B2B SaaS.
+
+Не делай дизайн похожим на дешёвый AI chatbot.
+
+Визуальный стиль:
+
+* clean
+* minimal
+* professional
+* lots of whitespace
+* subtle borders
+* readable typography
+* restrained use of color
+* dashboard-first
+
+Основной акцент:
+
+Revenue at Risk
+
+Пользователь должен открыть Dashboard и за 3 секунды понять:
+
+«Сколько денег сейчас под угрозой и почему?»
+
+⸻
+
+RESPONSIVE
+
+Приложение должно отлично работать:
+
+* iPhone
+* mobile Safari
+* tablet
+* desktop
+
+Так как основатель и первые пользователи могут работать с телефона.
+
+Не создавай отдельное mobile app.
+
+Сделай responsive web app.
+
+⸻
+
+TECHNICAL REQUIREMENTS
+
+Используй современный стабильный web stack, доступный внутри Replit.
+
+Раздели:
+
+* UI
+* parsing
+* AI extraction
+* comparison engine
+* revenue risk calculation
+* demo data
+
+Создай чистую структуру проекта.
+
+Добавь error handling.
+
+Если файл невозможно прочитать:
+
+Could not process this file.
+
+Не падай.
+
+⸻
+
+ВАЖНО
+
+Не добавляй функции просто ради количества.
+
+Главная ценность MVP:
+
+UPLOAD → ANALYZE → FIND MONEY AT RISK → SHOW EVIDENCE → RECOMMEND ACTION
+
+Если пользователь не понимает эту цепочку за 10 секунд — переделай интерфейс.
+
+Перед завершением:
+
+1. Проверь все основные пользовательские сценарии.
+2. Исправь ошибки.
+3. Убедись, что Demo Mode работает.
+4. Убедись, что приложение нормально выглядит на мобильном экране.
+5. Убедись, что нет fake buttons, которые ничего не делают.
+6. Убедись, что нигде не заявляется, что AI гарантирует обнаружение всех денежных потерь.
+
+Сделай приложение рабочим MVP, а не просто красивым макетом.
