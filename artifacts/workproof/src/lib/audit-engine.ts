@@ -65,6 +65,7 @@ export interface Finding {
   title: string;
   client: string;
   estimatedValue: number | null;
+  calculation: string | null;
   explanation: string;
   sources: string[];
   recommendedAction: string;
@@ -103,6 +104,8 @@ export interface AuditReport {
   revenueAtRisk: number | null;
   potentialUnbilled: number | null;
   insufficientData: boolean;
+  determinations: string[];
+  cannotDetermine: string[];
 }
 
 export class FileProcessingError extends Error {
@@ -117,6 +120,34 @@ const allowedExtensions: Record<UploadKind, string[]> = {
   communication: [".txt", ".docx", ".pdf", ".csv"],
   work: [".csv", ".xlsx"],
 };
+
+const workColumnPattern =
+  /\b(task|work|deliverable|description|item|activity|title|service|project task)\b/i;
+const communicationColumnPattern =
+  /\b(message|body|content|communication|subject|email|transcript|notes|text|chat|comment)\b/i;
+const quantityColumnPattern = /\b(quantity|qty|count|units|number completed)\b/i;
+
+function hasNonEmptyDataRows(rows: string[][]) {
+  return rows.slice(1).some((row) => row.some((cell) => String(cell).trim()));
+}
+
+function validateTabularRows(rows: string[][], kind: UploadKind): string[] {
+  const header = rows[0]?.map((cell) => String(cell).trim()) ?? [];
+  const validHeader =
+    kind === "work"
+      ? header.some((cell) => workColumnPattern.test(cell))
+      : header.some((cell) => communicationColumnPattern.test(cell));
+  if (!validHeader || !hasNonEmptyDataRows(rows)) {
+    const expected =
+      kind === "work"
+        ? "a task, work, deliverable, description, or activity column and at least one data row"
+        : "a message, body, content, subject, email, or transcript column and at least one data row";
+    throw new FileProcessingError(
+      `Could not process this file. The ${kind} spreadsheet needs ${expected}.`,
+    );
+  }
+  return header;
+}
 
 export function getAllowedExtensions(kind: UploadKind) {
   return allowedExtensions[kind].join(",");
@@ -147,23 +178,41 @@ export async function parseUploadedFile(
       const csv = Papa.parse<string[]>(await file.text(), {
         skipEmptyLines: true,
       });
-      if (csv.errors.length && csv.data.length === 0) {
+      if (csv.errors.length) {
         throw new Error(csv.errors[0]?.message);
       }
       rows = csv.data;
+      if (kind === "work" || kind === "communication") {
+        validateTabularRows(rows, kind);
+      }
       text = rows.map((row) => row.join(" | ")).join("\n");
     } else if (extension === ".xlsx") {
       const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
-      rows = workbook.SheetNames.flatMap((sheetName) => {
+      const parsedSheets = workbook.SheetNames.map((sheetName) => {
         const sheet = workbook.Sheets[sheetName];
         const sheetRows = XLSX.utils.sheet_to_json<string[]>(sheet, {
           header: 1,
           raw: false,
           defval: "",
         });
-        text += `\n[${sheetName}]\n${sheetRows.map((row) => row.join(" | ")).join("\n")}`;
-        return sheetRows;
+        return { sheetName, rows: sheetRows };
       });
+      const validSheets = parsedSheets.filter(({ rows: sheetRows }) => {
+        try {
+          validateTabularRows(sheetRows, kind);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (validSheets.length === 0) validateTabularRows(parsedSheets[0]?.rows ?? [], kind);
+      rows = validSheets.flatMap(({ rows: sheetRows }) => sheetRows);
+      text = validSheets
+        .map(
+          ({ sheetName, rows: sheetRows }) =>
+            `[${sheetName}]\n${sheetRows.map((row) => row.join(" | ")).join("\n")}`,
+        )
+        .join("\n\n");
     } else if (extension === ".docx") {
       const result = await mammoth.extractRawText({
         arrayBuffer: await file.arrayBuffer(),
@@ -227,24 +276,23 @@ const deliverableRules: DeliverableRule[] = [
   },
 ];
 
-function evidenceForLine(
-  file: ParsedUpload,
-  line: string,
-  index: number,
-): Evidence {
+function evidenceForLine(file: ParsedUpload, line: string, index: number): Evidence {
   return {
     fileName: file.name,
-    excerpt: line.trim(),
+    excerpt: line.trim().slice(0, 1500),
     lineNumber: index + 1,
     kind: file.kind,
   };
 }
 
-function linesOf(file: ParsedUpload) {
-  return file.text
-    .split(/\r?\n/)
-    .map((line, index) => ({ line: line.trim(), index }))
-    .filter(({ line }) => line.length > 0);
+function linesOf(files: ParsedUpload | ParsedUpload[]) {
+  const list = Array.isArray(files) ? files : [files];
+  return list.flatMap((file) =>
+    file.text
+      .split(/\r?\n/)
+      .map((line, index) => ({ file, line: line.trim(), index }))
+      .filter(({ line }) => line.length > 0),
+  );
 }
 
 function findQuantity(line: string, rule: DeliverableRule): number | null {
@@ -254,7 +302,10 @@ function findQuantity(line: string, rule: DeliverableRule): number | null {
   if (match?.[1]) return Number(match[1]);
 
   const reverseMatch = line.match(
-    new RegExp(`${rule.aliases.source}[^\\d$]{0,30}(\\d+(?:\\.\\d+)?)`, "i"),
+    new RegExp(
+      `${rule.aliases.source}\\s*(?:[:=|,-]|\\bcount\\b)\\s*(\\d+(?:\\.\\d+)?)`,
+      "i",
+    ),
   );
   return reverseMatch?.[1] ? Number(reverseMatch[1]) : null;
 }
@@ -262,11 +313,15 @@ function findQuantity(line: string, rule: DeliverableRule): number | null {
 function findExplicitUnitPrice(line: string, rule: DeliverableRule) {
   const patterns = [
     new RegExp(
-      `\\$\\s*(\\d+(?:,\\d{3})*(?:\\.\\d{1,2})?)\\s*(?:per|each|/)\\s*(?:${rule.aliases.source})`,
+      `\\$\\s*(\\d+(?:,\\d{3})*(?:\\.\\d{1,2})?)\\s*(?:\\/\\s*(?:${rule.aliases.source}|(?:page|post|creative|unit))|per\\s+(?:${rule.aliases.source}|(?:page|post|creative|unit))|each\\s+(?:${rule.aliases.source}))`,
       "i",
     ),
     new RegExp(
-      `(?:${rule.aliases.source})[^\\n$]{0,60}\\$\\s*(\\d+(?:,\\d{3})*(?:\\.\\d{1,2})?)\\s*(?:each|per\\s+(?:page|post|creative|unit))`,
+      `(?:${rule.aliases.source})[^\\n$]{0,60}\\$\\s*(\\d+(?:,\\d{3})*(?:\\.\\d{1,2})?)\\s*(?:each|per\\s+(?:page|post|creative|unit)|\\/\\s*(?:page|post|creative|unit))`,
+      "i",
+    ),
+    new RegExp(
+      `(?:${rule.aliases.source})[^\\n$]{0,60}\\b(?:unit\\s+rate|rate\\s+per\\s+unit)\\s*[:=]?\\s*\\$\\s*(\\d+(?:,\\d{3})*(?:\\.\\d{1,2})?)`,
       "i",
     ),
   ];
@@ -278,12 +333,12 @@ function findExplicitUnitPrice(line: string, rule: DeliverableRule) {
 }
 
 function buildScopeRows(
-  contractFile: ParsedUpload | undefined,
-  workFile: ParsedUpload | undefined,
+  contractFiles: ParsedUpload[],
+  workFiles: ParsedUpload[],
 ): ScopeRow[] {
-  if (!contractFile || !workFile) return [];
-  const contractLines = linesOf(contractFile);
-  const workLines = linesOf(workFile);
+  if (contractFiles.length === 0 || workFiles.length === 0) return [];
+  const contractLines = linesOf(contractFiles);
+  const workLines = linesOf(workFiles);
 
   return deliverableRules.flatMap((rule) => {
     const contractMatch = contractLines.find(({ line }) =>
@@ -306,8 +361,11 @@ function buildScopeRows(
           ? explicitWorkQuantities.reduce((sum, value) => sum + value, 0)
           : actualMatches.length
         : null;
-    const unitPrice = contractMatch
-      ? findExplicitUnitPrice(contractMatch.line, rule)
+    const explicitRate = contractLines.find(({ line }) =>
+      findExplicitUnitPrice(line, rule),
+    );
+    const unitPrice = explicitRate
+      ? findExplicitUnitPrice(explicitRate.line, rule)
       : null;
     const difference =
       contractQuantity !== null && actualQuantity !== null
@@ -329,13 +387,17 @@ function buildScopeRows(
               : "within-scope",
         contractEvidence: contractMatch
           ? evidenceForLine(
-              contractFile,
+              contractMatch.file,
               contractMatch.line,
               contractMatch.index,
             )
           : undefined,
         actualEvidence: actualMatches[0]
-          ? evidenceForLine(workFile, actualMatches[0].line, actualMatches[0].index)
+          ? evidenceForLine(
+              actualMatches[0].file,
+              actualMatches[0].line,
+              actualMatches[0].index,
+            )
           : undefined,
       },
     ];
@@ -343,17 +405,17 @@ function buildScopeRows(
 }
 
 function findRequestEvidence(
-  communicationFile: ParsedUpload | undefined,
+  communicationFiles: ParsedUpload[],
   work: ScopeRow,
 ) {
-  if (!communicationFile) return [];
+  if (communicationFiles.length === 0) return [];
   const requestPattern =
     /\b(?:request(?:ed)?|please|can you|could you|add|additional|extra|another|also|need|would like|create|build|design)\b/i;
-  return linesOf(communicationFile)
+  return linesOf(communicationFiles)
     .filter(({ line }) => workLabelMatches(line, work.work) && requestPattern.test(line))
     .slice(0, 2)
-    .map(({ line, index }) =>
-      evidenceForLine(communicationFile, line, index),
+    .map(({ file, line, index }) =>
+      evidenceForLine(file, line, index),
     );
 }
 
@@ -362,65 +424,66 @@ function workLabelMatches(line: string, label: string) {
   return rule?.aliases.test(line) ?? false;
 }
 
-function amountFromContractValue(
-  contractFile: ParsedUpload | undefined,
-  scopeRow: ScopeRow,
-  extraQuantity: number,
-) {
+function amountFromContractValue(scopeRow: ScopeRow, extraQuantity: number) {
   if (scopeRow.unitPrice !== null) return scopeRow.unitPrice * extraQuantity;
-  if (!contractFile) return null;
-  const explicitRateLines = linesOf(contractFile).filter(({ line }) =>
-    findExplicitUnitPrice(
-      line,
-      deliverableRules.find((rule) => rule.label === scopeRow.work)!,
-    ),
-  );
-  if (explicitRateLines.length > 0) {
-    const rate = findExplicitUnitPrice(
-      explicitRateLines[0].line,
-      deliverableRules.find((rule) => rule.label === scopeRow.work)!,
-    );
-    if (rate !== null) return rate * extraQuantity;
-  }
   return null;
 }
 
-function inferClient(contractFile: ParsedUpload | undefined, fallback: string) {
-  if (!contractFile) return fallback || "Unknown client";
-  const text = contractFile.text;
+export function calculateRevenueAtRisk(
+  findings: Pick<Finding, "estimatedValue">[],
+): number | null {
+  if (
+    findings.some(
+      ({ estimatedValue }) =>
+        estimatedValue === null ||
+        !Number.isFinite(estimatedValue) ||
+        estimatedValue < 0,
+    )
+  ) {
+    return null;
+  }
+  return findings.reduce(
+    (total, finding) => total + (finding.estimatedValue ?? 0),
+    0,
+  );
+}
+
+function inferClient(contractFiles: ParsedUpload[], fallback: string) {
   const patterns = [
     /(?:client|prepared for|customer)\s*[:\-]\s*([A-Z][A-Za-z0-9& .'-]{2,50})/i,
     /(?:agreement|statement of work)\s+(?:with|for)\s+([A-Z][A-Za-z0-9& .'-]{2,50})/i,
   ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) return match[1].trim().replace(/[.,;]+$/, "");
+  for (const file of contractFiles) {
+    for (const pattern of patterns) {
+      const match = file.text.match(pattern);
+      if (match?.[1]) return match[1].trim().replace(/[.,;]+$/, "");
+    }
   }
   return fallback || "Unknown client";
 }
 
 function extractCommitments(
-  communicationFile: ParsedUpload | undefined,
+  communicationFiles: ParsedUpload[],
   client: string,
 ): Commitment[] {
-  if (!communicationFile) return [];
+  if (communicationFiles.length === 0) return [];
   const commitmentPattern =
     /\b(?:we(?:'ll| will)|i(?:'ll| will)|committed to|promise(?:d)? to|deliver|complete|send|share|provide|finish)\b/i;
-  return linesOf(communicationFile)
+  return linesOf(communicationFiles)
     .filter(({ line }) => commitmentPattern.test(line))
     .slice(0, 20)
-    .map(({ line, index }, position) => {
+    .map(({ file, line, index }, position) => {
       const dueMatch = line.match(
         /\b(?:by|before|due(?: date)?[: ]*)\s+((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}(?:,?\s+\d{4})?|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)/i,
       );
-      const evidence = evidenceForLine(communicationFile, line, index);
+      const evidence = evidenceForLine(file, line, index);
       return {
         id: `commitment-${position + 1}`,
         client,
         commitment: line,
-        owner: "Unassigned",
+        owner: "Not available",
         dueDate: dueMatch?.[1] ?? null,
-        source: communicationFile.name,
+        source: file.name,
         status: dueMatch ? "Open" : "Unverified",
         evidence,
         estimatedValue: null,
@@ -432,28 +495,36 @@ export function analyzeProject(
   files: ParsedUpload[],
   projectName: string,
 ): AuditReport {
-  const contractFile = files.find((file) => file.kind === "contract");
-  const communicationFile = files.find((file) => file.kind === "communication");
-  const workFile = files.find((file) => file.kind === "work");
-  const client = inferClient(contractFile, projectName);
-  const scopeRows = buildScopeRows(contractFile, workFile);
+  const uniqueFiles = files.filter((file, index) => {
+    const signature = `${file.kind}\u0000${file.text.replace(/\s+/g, " ").trim()}`;
+    return files.findIndex((candidate) =>
+      `${candidate.kind}\u0000${candidate.text.replace(/\s+/g, " ").trim()}` === signature,
+    ) === index;
+  });
+  const contractFiles = uniqueFiles.filter((file) => file.kind === "contract");
+  const communicationFiles = uniqueFiles.filter(
+    (file) => file.kind === "communication",
+  );
+  const workFiles = uniqueFiles.filter((file) => file.kind === "work");
+  const client = inferClient(contractFiles, projectName);
+  const scopeRows = buildScopeRows(contractFiles, workFiles);
   const findings: Finding[] = [];
 
   scopeRows.forEach((row, index) => {
     if (row.difference === null || row.difference <= 0) return;
-    const requestEvidence = findRequestEvidence(communicationFile, row);
+    const requestEvidence = findRequestEvidence(communicationFiles, row);
     const evidence = [
       ...(row.contractEvidence ? [row.contractEvidence] : []),
       ...(row.actualEvidence ? [row.actualEvidence] : []),
       ...requestEvidence,
     ];
-    const estimatedValue = amountFromContractValue(
-      contractFile,
-      row,
-      row.difference,
-    );
+    const estimatedValue = amountFromContractValue(row, row.difference);
     const hasRequest = requestEvidence.length > 0;
     const title = `${row.difference} additional ${row.work.toLowerCase()} detected outside SOW`;
+    const calculation =
+      estimatedValue !== null && row.unitPrice !== null
+        ? `${row.difference} × $${row.unitPrice.toLocaleString("en-US")} per unit = $${estimatedValue.toLocaleString("en-US")}`
+        : null;
     findings.push({
       id: `finding-scope-${index + 1}`,
       severity: hasRequest ? "High" : "Medium",
@@ -461,12 +532,19 @@ export function analyzeProject(
       title,
       client,
       estimatedValue,
+      calculation,
       explanation: `${row.contract ?? "Unspecified"} ${row.work.toLowerCase()} in the contract and ${row.actual} reflected in work data. ${hasRequest ? "A related client request appears in the communication file." : "No matching request evidence was found in the communication file."}`,
       sources: [...new Set(evidence.map((item) => item.fileName))],
       recommendedAction: hasRequest
         ? "Confirm scope approval and create a change order."
         : "Review the work record against the agreed scope before billing.",
-      confidence: hasRequest ? 92 : 78,
+      confidence: Math.round(
+        ((row.contractEvidence ? 1 : 0) +
+          (row.actualEvidence ? 1 : 0) +
+          (requestEvidence.length > 0 ? 1 : 0)) /
+          3 *
+          100,
+      ),
       approvalStatus: "Formal approval not verified in provided files",
       evidence,
       chronology: [
@@ -504,28 +582,61 @@ export function analyzeProject(
     });
   });
 
-  const commitments = extractCommitments(communicationFile, client);
-  const hasMissingFiles = !contractFile || !workFile || !communicationFile;
-  const pricedRisk = findings.reduce(
-    (sum, finding) => sum + (finding.revenueAtRisk ?? 0),
-    0,
-  );
+  const commitments = extractCommitments(communicationFiles, client);
+  const hasMissingFiles =
+    contractFiles.length === 0 ||
+    workFiles.length === 0 ||
+    communicationFiles.length === 0;
   const hasUnpricedRisk = findings.some(
     (finding) => finding.revenueAtRisk === null,
   );
+  const determinations: string[] = [];
+  const cannotDetermine: string[] = [];
+  if (contractFiles.length > 0) {
+    determinations.push("Contract text was extracted from the uploaded file(s).");
+  } else {
+    cannotDetermine.push("Contract scope and agreed quantities: contract file not provided.");
+  }
+  if (communicationFiles.length > 0) {
+    determinations.push("Communication text was extracted and checked for requests and commitments.");
+  } else {
+    cannotDetermine.push("Client requests and commitments: communication file not provided.");
+  }
+  if (workFiles.length > 0) {
+    determinations.push("Work data rows were extracted from the uploaded file(s).");
+  } else {
+    cannotDetermine.push("Completed work quantities: work data file not provided.");
+  }
+  if (scopeRows.length > 0) {
+    determinations.push(`Contract quantities were compared with recorded work for ${scopeRows.length} deliverable type(s).`);
+  } else {
+    cannotDetermine.push("Scope comparison: matching contract and work records were not both available.");
+  }
+  cannotDetermine.push("Invoice matching: no invoice records were included in the upload flow.");
+  if (findings.some((finding) => finding.estimatedValue === null)) {
+    cannotDetermine.push("Revenue value for one or more deviations: a verified unit rate was not found.");
+  }
+  if (findings.length > 0) {
+    cannotDetermine.push("Formal approval: approval evidence was not verified in the provided files.");
+  }
   return {
     id: crypto.randomUUID(),
     project: projectName || client,
     client,
     createdAt: new Date().toISOString(),
     isDemo: false,
-    files,
+    files: uniqueFiles,
     findings,
     commitments,
     scopeRows,
-    revenueAtRisk: hasUnpricedRisk || hasMissingFiles ? null : pricedRisk,
+    revenueAtRisk:
+      hasMissingFiles || hasUnpricedRisk
+        ? null
+        : calculateRevenueAtRisk(findings),
     potentialUnbilled: null,
     insufficientData: hasUnpricedRisk || hasMissingFiles || findings.length === 0,
+    determinations,
+    cannotDetermine,
   };
 }
 
@@ -539,6 +650,12 @@ export const demoReport: AuditReport = {
   revenueAtRisk: 2450,
   potentialUnbilled: 2450,
   insufficientData: false,
+  determinations: [
+    "DEMO DATA · The Northstar example compares the stated agreement scope with illustrative communication and work records.",
+  ],
+  cannotDetermine: [
+    "DEMO DATA · Invoice matching is not assessed because invoice records are not part of the sample.",
+  ],
   scopeRows: [
     {
       work: "Landing pages",
@@ -573,6 +690,7 @@ export const demoReport: AuditReport = {
       title: "2 additional landing pages completed",
       client: "Northstar Media",
       estimatedValue: 1600,
+      calculation: "DEMO DATA · illustrative allocation toward the preset $2,450 demo total; no unit rate is claimed.",
       explanation:
         "The monthly SOW includes 4 landing pages. A client request for two more appears in the communication sample, and work data shows 6 pages completed. Demo estimate based on the sample's stated change-order value.",
       sources: ["Northstar_SOW_demo.txt", "Client_thread_demo.txt", "Work_log_demo.csv"],
@@ -635,6 +753,7 @@ export const demoReport: AuditReport = {
       title: "8 extra social creatives recorded",
       client: "Northstar Media",
       estimatedValue: 850,
+      calculation: "DEMO DATA · illustrative allocation toward the preset $2,450 demo total; no unit rate is claimed.",
       explanation:
         "The SOW includes 20 social creatives and the demo work log shows 28 completed. The demo estimate is allocated from the sample's stated $2,450 total risk.",
       sources: ["Northstar_SOW_demo.txt", "Work_log_demo.csv"],
